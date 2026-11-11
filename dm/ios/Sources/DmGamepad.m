@@ -15,6 +15,7 @@
 //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #import <GameController/GameController.h>
 #import <CoreMotion/CoreMotion.h>
 #import <CoreText/CoreText.h>
@@ -136,6 +137,28 @@ int dm_opmode(void);   // hle_oe.c: 0 = handheld
 @interface DmGamepad : UIView
 - (void)arrange:(DmLayout)layout;
 - (BOOL)menuTakes:(CGPoint)p;
+- (void)touchActivity:(BOOL)active;
+@end
+
+// Observe touches throughout the window without taking them from controls, menus or the game.
+@interface DmTouchActivity : UIGestureRecognizer
+@property (nonatomic, weak) DmGamepad *pad;
+@property (nonatomic, strong) NSMutableSet<UITouch *> *activeTouches;
+@end
+@implementation DmTouchActivity
+- (instancetype)initWithPad:(DmGamepad *)pad {
+    if ((self = [super initWithTarget:nil action:nil])) { _pad = pad; _activeTouches = [NSMutableSet set]; self.cancelsTouchesInView = NO; self.delaysTouchesBegan = NO; self.delaysTouchesEnded = NO; }
+    return self;
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [_activeTouches unionSet:touches]; [_pad touchActivity:YES]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [_activeTouches minusSet:touches]; if (!_activeTouches.count) { [_pad touchActivity:NO]; self.state = UIGestureRecognizerStateFailed; } }
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self touchesEnded:touches withEvent:event]; }
+- (void)reset {
+    [super reset];
+    if (_activeTouches.count) { [_activeTouches removeAllObjects]; [_pad touchActivity:NO]; }
+}
+- (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)other { return NO; }
+- (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)other { return NO; }
 @end
 // The menu button: a UIButton whose menu is the in-game menu (UIKit draws it and takes the touches while it is open). Its hit circle is larger than the drawn one, and a key nearer
 // to the touch wins (− / + sit beside it), so it asks the pad
@@ -161,6 +184,10 @@ static void pads_start(void);   // Physical controllers, below
     BOOL _stickShown;                              // the left stick was held at the last refresh
     BOOL _full, _tap;                              // the 3D layout / the Tap layout is current
     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
+    BOOL _autoHide;
+    BOOL _screenTouchActive;
+    NSTimer *_hideTimer;
+    DmTouchActivity *_touchObserver;
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     DmLayout _layout;
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
@@ -217,6 +244,9 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         __weak DmGamepad *weakSelf = self;
         [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
         [self addSubview:_menu];
+        _touchObserver = [[DmTouchActivity alloc] initWithPad:self];
+        const char *autoHide = getenv("DM_TOUCH_AUTO_HIDE");
+        _autoHide = autoHide && atoi(autoHide);
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
         int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
@@ -231,6 +261,35 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         phone_motion_start(self);
     }
     return self;
+}
+// A split layout or a TV leaves the game picture unobscured by the controls.
+- (BOOL)shouldAutoHide { return _autoHide && !_layout.separated && !CGRectIsEmpty(_layout.game); }
+// Fade the controls and gear without hiding the pad view, so a screen touch can reveal them.
+- (void)showControls {
+    [_controls removeAnimationForKey:@"opacity"]; [_menu.layer removeAllAnimations];
+    [CATransaction begin]; [CATransaction setDisableActions:YES]; _controls.opacity = 1; [CATransaction commit];
+    _menu.alpha = 1;
+}
+- (void)hideControls:(NSTimer *)timer {
+    _hideTimer = nil;
+    if (![self shouldAutoHide] || _screenTouchActive || !self.window) return;
+    [CATransaction begin]; [CATransaction setAnimationDuration:0.3]; _controls.opacity = 0; [CATransaction commit];
+    [UIView animateWithDuration:0.3 animations:^{ self->_menu.alpha = 0; }];
+}
+- (void)touchActivity:(BOOL)active {
+    _screenTouchActive = active;
+    [_hideTimer invalidate]; _hideTimer = nil;
+    [self showControls];
+    if ([self shouldAutoHide] && !active && self.window) _hideTimer = [NSTimer scheduledTimerWithTimeInterval:5 target:self selector:@selector(hideControls:) userInfo:nil repeats:NO];
+}
+- (void)updateTouchObserver {
+    UIWindow *window = [self shouldAutoHide] ? self.window : nil;
+    if (_touchObserver.view != window) { [_touchObserver.view removeGestureRecognizer:_touchObserver]; if (window) [window addGestureRecognizer:_touchObserver]; }
+}
+- (void)setAutoHide:(BOOL)on { _autoHide = on; [self updateTouchObserver]; [self touchActivity:on ? _screenTouchActive : NO]; }
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self updateTouchObserver]; [self touchActivity:NO];
 }
 - (void)applyLayout {   // show / hide the controls for the current layout
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -258,8 +317,10 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 // ---- Layout (points; computed inside the safe area) ----
 - (void)arrange:(DmLayout)layout {
     if (CGRectEqualToRect(_layout.controls, layout.controls) && CGRectEqualToRect(_layout.game, layout.game) && _layout.separated == layout.separated && _layout.topSafeOnly == layout.topSafeOnly) return;
+    BOOL wasHiding = [self shouldAutoHide];
     [self reset];   // A finger held across a pose change must not leave a key or game touch stuck.
     _layout = layout;
+    if (wasHiding != [self shouldAutoHide]) { [self updateTouchObserver]; [self touchActivity:_screenTouchActive]; }
     [self setNeedsLayout];
 }
 - (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }
@@ -745,6 +806,7 @@ int front_ctrl_support(int min, int max) {
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
 void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
+void dm_gamepad_auto_hide(bool on) { [g_view setAutoHide:on]; }
 void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
 int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
 bool dm_pad_layout_offered(int layout) { return layout == 0 || layout == 1 || (layout == 2 && dm_opmode() == 0); }
