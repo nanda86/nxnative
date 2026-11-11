@@ -1,5 +1,6 @@
 #import <XCTest/XCTest.h>
 #import <GameController/GameController.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <objc/runtime.h>
 #if __has_include(<UIKit/UIHingeInteraction.h>)
@@ -15,6 +16,11 @@
 #include "dm_input.h"
 #include <math.h>
 #include <stdio.h>
+@interface UIView (DuoIdleControlsTest)
+- (void)touchActivity:(BOOL)active;
+- (void)hideControls:(NSTimer *)timer;
+@end
+
 void front_picture_shape(int w, int h);   // front_ios.m (dm/host/front.h)
 
 static NSArray<GCController *> *gDuoHarnessControllers;
@@ -696,7 +702,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     [root.view layoutIfNeeded];
     UIView *game = [root valueForKey:@"game"];
     XCTAssertTrue(dm_setting_live("DM_PICTURE_FIT", NULL) && dm_setting_live("DM_OPMODE", NULL) && dm_setting_live("DM_RUMBLE", NULL)
-                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL));
+                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL) && dm_setting_live("DM_TOUCH_AUTO_HIDE", NULL));
     XCTAssertFalse(dm_setting_live("DM_LANG", NULL), @"A setting the game reads once at start is not offered");
     XCTAssertFalse(dm_setting_live("DM_FPS_TARGET", NULL));
 
@@ -716,6 +722,37 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     UILabel *fps = [root valueForKey:@"fps"];
     XCTAssertNotNil(fps); XCTAssertFalse(fps.hidden);
     dm_setting_live("DM_SHOW_FPS", "0"); XCTAssertTrue(fps.hidden);
+}
+
+- (void)testTouchControlsFadeAndReturnWithoutLosingInput {
+    UIViewController *root = [self harnessRootViewController];
+    UIView *pad = [self padForLayout:dm_layout(root.view.bounds, UIEdgeInsetsZero, NO, CGRectNull, DM_PICTURE_16_9) bounds:root.view.bounds];
+    [root.view addSubview:pad];
+    CALayer *controls = [pad valueForKey:@"controls"];
+    dm_gamepad_auto_hide(true);
+    NSTimer *timer = [pad valueForKey:@"hideTimer"];
+    XCTAssertNotNil(timer); XCTAssertEqualWithAccuracy(timer.fireDate.timeIntervalSinceNow, 5.0, 0.25);
+    [timer fire]; XCTAssertEqualWithAccuracy(controls.opacity, 0, 0.001);
+    UIGestureRecognizer *observer = [pad valueForKey:@"touchObserver"];
+    XCTAssertEqual(observer.view, pad.window);
+    XCTAssertFalse(observer.cancelsTouchesInView);
+    XCTAssertFalse(observer.delaysTouchesBegan); XCTAssertFalse(observer.delaysTouchesEnded);
+    DuoFakeTouch *first = [DuoFakeTouch new], *second = [DuoFakeTouch new];
+    [observer touchesBegan:(NSSet *)[NSSet setWithObjects:first, second, nil] withEvent:nil];
+    XCTAssertEqualWithAccuracy(controls.opacity, 1, 0.001);
+    [observer touchesEnded:(NSSet *)[NSSet setWithObject:first] withEvent:nil];
+    XCTAssertNil([pad valueForKey:@"hideTimer"], @"Another finger is still on screen");
+    [observer touchesEnded:(NSSet *)[NSSet setWithObject:second] withEvent:nil];
+    XCTAssertNotNil([pad valueForKey:@"hideTimer"]);
+    [pad touchActivity:YES];
+    XCTAssertEqualWithAccuracy(controls.opacity, 1, 0.001);
+    XCTAssertNil([pad valueForKey:@"hideTimer"], @"A held finger keeps the controls visible");
+    [pad hideControls:nil]; XCTAssertEqualWithAccuracy(controls.opacity, 1, 0.001);
+    [pad touchActivity:NO]; XCTAssertNotNil([pad valueForKey:@"hideTimer"]);
+    dm_gamepad_auto_hide(false);
+    XCTAssertNil([pad valueForKey:@"hideTimer"]); XCTAssertEqualWithAccuracy(controls.opacity, 1, 0.001);
+    XCTAssertNil(observer.view, @"The screen observer is removed when the option is off");
+    [pad removeFromSuperview];
 }
 
 - (void)testGameViewDrawableHonoursAPixelCap {

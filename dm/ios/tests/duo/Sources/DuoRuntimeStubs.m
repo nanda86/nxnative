@@ -121,3 +121,7 @@ const char *front_ios_boot_message(void) { return NULL; }
 const char *front_ios_device_check(void) { return NULL; }   // a supported GPU
 void dm_cloud_saves_env(void) {}
 int save_sync_flush(int timeout_ms) { (void)timeout_ms; return 1; }
+
+// The harness has one player and no offline web page.
+int dm_players_reported(void) { return 1; }
+int front_web_touch(void) { return 0; }
