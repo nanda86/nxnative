@@ -262,24 +262,28 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     }
     return self;
 }
-// Keep the menu visible and the pad hit-testable; only the drawn controls fade.
+// A split layout or a TV leaves the game picture unobscured by the controls.
+- (BOOL)shouldAutoHide { return _autoHide && !_layout.separated && !CGRectIsEmpty(_layout.game); }
+// Fade the controls and gear without hiding the pad view, so a screen touch can reveal them.
 - (void)showControls {
-    [_controls removeAnimationForKey:@"opacity"];
+    [_controls removeAnimationForKey:@"opacity"]; [_menu.layer removeAllAnimations];
     [CATransaction begin]; [CATransaction setDisableActions:YES]; _controls.opacity = 1; [CATransaction commit];
+    _menu.alpha = 1;
 }
 - (void)hideControls:(NSTimer *)timer {
     _hideTimer = nil;
-    if (!_autoHide || _screenTouchActive || !self.window) return;
+    if (![self shouldAutoHide] || _screenTouchActive || !self.window) return;
     [CATransaction begin]; [CATransaction setAnimationDuration:0.3]; _controls.opacity = 0; [CATransaction commit];
+    [UIView animateWithDuration:0.3 animations:^{ self->_menu.alpha = 0; }];
 }
 - (void)touchActivity:(BOOL)active {
     _screenTouchActive = active;
     [_hideTimer invalidate]; _hideTimer = nil;
     [self showControls];
-    if (_autoHide && !active && self.window) _hideTimer = [NSTimer scheduledTimerWithTimeInterval:5 target:self selector:@selector(hideControls:) userInfo:nil repeats:NO];
+    if ([self shouldAutoHide] && !active && self.window) _hideTimer = [NSTimer scheduledTimerWithTimeInterval:5 target:self selector:@selector(hideControls:) userInfo:nil repeats:NO];
 }
 - (void)updateTouchObserver {
-    UIWindow *window = _autoHide ? self.window : nil;
+    UIWindow *window = [self shouldAutoHide] ? self.window : nil;
     if (_touchObserver.view != window) { [_touchObserver.view removeGestureRecognizer:_touchObserver]; if (window) [window addGestureRecognizer:_touchObserver]; }
 }
 - (void)setAutoHide:(BOOL)on { _autoHide = on; [self updateTouchObserver]; [self touchActivity:on ? _screenTouchActive : NO]; }
@@ -313,8 +317,10 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 // ---- Layout (points; computed inside the safe area) ----
 - (void)arrange:(DmLayout)layout {
     if (CGRectEqualToRect(_layout.controls, layout.controls) && CGRectEqualToRect(_layout.game, layout.game) && _layout.separated == layout.separated && _layout.topSafeOnly == layout.topSafeOnly) return;
+    BOOL wasHiding = [self shouldAutoHide];
     [self reset];   // A finger held across a pose change must not leave a key or game touch stuck.
     _layout = layout;
+    if (wasHiding != [self shouldAutoHide]) { [self updateTouchObserver]; [self touchActivity:_screenTouchActive]; }
     [self setNeedsLayout];
 }
 - (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }

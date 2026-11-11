@@ -101,7 +101,7 @@ A light tap from the phone when you press an on-screen button.
 
 ### Fade touch controls after 5 seconds
 
-Off by default. When enabled, the on-screen gamepad fades away five seconds after the last screen touch ends. Touch anywhere to show it again; the touch still reaches the game or control. The gear remains visible so the menu stays accessible.
+Off by default. When enabled, the on-screen gamepad fades away five seconds after the last screen touch ends. Touch anywhere to show it again; the touch still reaches the game or control. The gear fades with the controls and returns on the next touch. Controls stay visible when they are separate from the picture, such as in portrait or on a TV.
 
 ### Game rumble
 
